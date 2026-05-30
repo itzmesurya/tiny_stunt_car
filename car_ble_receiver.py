@@ -54,7 +54,10 @@ class BLERemote:
             b"\x02\x01\x06"
             + bytes([1 + len(name)]) + b"\x09" + name
         )
-        self._ble.gap_advertise(100_000, adv)
+        try:
+            self._ble.gap_advertise(100_000, adv)
+        except OSError:
+            pass   # BLE stack briefly busy after disconnect — safe to ignore
 
     def _irq(self, event, data):
         if event == _IRQ_CENTRAL_CONNECT:
