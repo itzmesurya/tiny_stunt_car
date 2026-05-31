@@ -68,7 +68,7 @@ def read_joystick(cx, cy):
     for _ in range(5):   # 5-sample average kills ADC jitter
         rx += JOY_X.read()
         ry += JOY_Y.read()
-    x = max(-100, min(100, int(-((rx//5 - cx) * 100 / 2047))))
+    x = max(-100, min(100, int(((rx//5 - cx) * 100 / 2047))))
     y = max(-100, min(100, int(  (ry//5 - cy) * 100 / 2047)))
     l = max(-100, min(100, _dz(y) + _dz(x)))
     r = max(-100, min(100, _dz(y) - _dz(x)))

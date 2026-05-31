@@ -1,38 +1,22 @@
 # ═══════════════════════════════════════════════════════════════
-#  TinyCar — Remote ESP32 Firmware
+#  TinyCar — Phase 1 Remote Diagnostic
 #  MicroPython v1.28 · ESP32 DevKit v1
 #
-#  Connects to a SPECIFIC car by MAC address — safe to use
-#  when multiple TinyCars are nearby. Only pairs with YOUR car.
+#  Prints every joystick packet with human-readable direction.
+#  Only prints when direction or values change — no console spam.
 #
 #  Pin Map:
 #    GPIO2  → Status LED (on = BLE connected)
-#    GPIO4  → Pair button (GND, internal pull-up) — reserved
-#    GPIO34 → Joystick VRx (HORZ) — X axis steering
-#    GPIO35 → Joystick VRy (VERT) — Y axis speed
-#
-#  BLE:
-#    Scans for CAR_MAC below — ignores all other TinyCar devices
-#    Sends L/R packets every 50ms: "L:+085,R:-032"
-#    Re-scans automatically on disconnect
-#
-#  Fixes applied 31 May 2026:
-#    ✅ X axis negation removed — left/right now correct
-#       when joystick pins face toward driver
-#
-#  ⚠  Change CAR_MAC to match YOUR car's MAC address.
-#     Find it on the car console at boot, or in your progress doc.
+#    GPIO34 → Joystick VRx (HORZ)
+#    GPIO35 → Joystick VRy (VERT)
 # ═══════════════════════════════════════════════════════════════
 
 import bluetooth
 from machine import Pin, ADC
 from utime import sleep_ms, ticks_ms, ticks_diff
 
-CAR_MAC = "5a:36:94:df:94:8c"   # ← car's BLE MAC (confirmed)
-
-# ── STATUS LED + BUTTON ──────────────────────────────────────
+# ── STATUS LED ───────────────────────────────────────────────
 STATUS = Pin(2, Pin.OUT)
-BUTTON = Pin(4, Pin.IN, Pin.PULL_UP)
 
 # ── JOYSTICK ─────────────────────────────────────────────────
 JOY_X = ADC(Pin(34)); JOY_X.atten(ADC.ATTN_11DB)
@@ -58,23 +42,50 @@ def _dz(v):
     return s * min(100, int((abs(v) - DEAD_ZONE) * 100 // (100 - DEAD_ZONE)))
 
 def read_joystick(cx, cy):
-    """
-    Returns (left%, right%) each -100 to +100.
-    X axis negation removed — joystick pins face toward driver.
-    Y axis: push away = forward, pull toward = reverse.
-    Differential steering: y+x → left wheel, y-x → right wheel.
-    """
     rx = ry = 0
     for _ in range(5):
         rx += JOY_X.read()
         ry += JOY_Y.read()
-    x = max(-100, min(100, int(((rx//5 - cx) * 100 / 2047))))   # no negation
-    y = max(-100, min(100, int(((ry//5 - cy) * 100 / 2047))))
+    x = max(-100, min(100, int(((rx//5 - cx) * 100 / 2047))))
+    y = max(-100, min(100, int(  (ry//5 - cy) * 100 / 2047)))
     l = max(-100, min(100, _dz(y) + _dz(x)))
     r = max(-100, min(100, _dz(y) - _dz(x)))
     return l, r
 
-# ── MAC HELPERS ──────────────────────────────────────────────
+# ── DIRECTION CLASSIFIER ─────────────────────────────────────
+ARC_THRESHOLD = 15   # L/R difference below this = pure fwd/rev
+
+def classify_direction(l, r):
+    if l == 0 and r == 0:
+        return "STOPPED"
+    # Pure spins — one side clearly opposite
+    if l < 0 and r > 0:
+        return "SPIN LEFT"
+    if l > 0 and r < 0:
+        return "SPIN RIGHT"
+    # Forward family
+    if l > 0 and r > 0:
+        diff = l - r
+        if abs(diff) < ARC_THRESHOLD:
+            return "FORWARD"
+        elif diff > 0:
+            return "FWD + RIGHT arc"
+        else:
+            return "FWD + LEFT arc"
+    # Reverse family
+    if l < 0 and r < 0:
+        diff = abs(l) - abs(r)
+        if abs(diff) < ARC_THRESHOLD:
+            return "REVERSE"
+        elif diff > 0:
+            return "REV + LEFT arc"
+        else:
+            return "REV + RIGHT arc"
+    return "UNKNOWN"
+
+# ── MAC + BLE ─────────────────────────────────────────────────
+CAR_MAC = "5a:36:94:df:94:8c"
+
 def mac_str_to_bytes(mac_str):
     parts = mac_str.split(":")
     return bytes(reversed([int(p, 16) for p in parts]))
@@ -82,13 +93,9 @@ def mac_str_to_bytes(mac_str):
 def mac_bytes_to_str(mac_bytes):
     return ":".join(f"{b:02x}" for b in reversed(mac_bytes))
 
-TARGET_MAC_BYTES = mac_str_to_bytes(CAR_MAC)
-
-# ── BLE GATT UUIDs ───────────────────────────────────────────
 UART_SERVICE_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 UART_RX_UUID      = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 
-# ── BLE STATE ────────────────────────────────────────────────
 ble          = bluetooth.BLE()
 ble.active(True)
 
@@ -142,8 +149,8 @@ def _ble_irq(event, data):
         conn_handle, def_handle, value_handle, properties, uuid = data
         if uuid == UART_RX_UUID:
             _rx_handle = value_handle
-            print(f"RX handle={_rx_handle} — ready to send")
-            print("Connected to TinyCar!")
+            print(f"RX handle={_rx_handle}  — ready to send")
+            print("Connected to TinyCar!\n")
 
     elif event == 17:
         pass
@@ -171,8 +178,8 @@ def startup_blink(n=3):
 
 # ── MAIN ─────────────────────────────────────────────────────
 print("=" * 52)
-print("  TinyCar Remote Firmware")
-print(f"  Target car MAC: {CAR_MAC}")
+print("  TinyCar Phase 1 — Remote Diagnostic")
+print(f"  Target car: {CAR_MAC}")
 print("=" * 52)
 
 CX, CY = calibrate_joystick()
@@ -180,13 +187,33 @@ startup_blink()
 start_scan()
 
 # ── MAIN LOOP ────────────────────────────────────────────────
-last_send        = 0
-SEND_INTERVAL_MS = 50   # 20Hz
+last_send      = 0
+last_label     = ""
+last_l         = None
+last_r         = None
+SEND_MS        = 50      # 20Hz send rate
+PRINT_CHANGE   = True    # only print on change
 
 while True:
     now = ticks_ms()
-    if _connected and ticks_diff(now, last_send) >= SEND_INTERVAL_MS:
+
+    if _connected and ticks_diff(now, last_send) >= SEND_MS:
         last_send = now
         l, r = read_joystick(CX, CY)
+        label = classify_direction(l, r)
+
+        # Send packet regardless
         send_packet(l, r)
+
+        # Print only when direction label or values change
+        # STOPPED only prints once on transition — not repeatedly
+        if label != last_label or l != last_l or r != last_r:
+            if label == "STOPPED" and last_label == "STOPPED":
+                pass   # already printed STOPPED once — suppress repeats
+            else:
+                print(f"Remote → L:{l:+04d},R:{r:+04d}  │  {label}")
+            last_label = label
+            last_l     = l
+            last_r     = r
+
     sleep_ms(10)
